@@ -145,6 +145,10 @@ impl<S: Socket> BufferedSocket<S> {
         self.read_buf.shrink();
     }
 
+    pub fn socket(&self) -> &S {
+        &self.socket
+    }
+
     pub fn into_inner(self) -> S {
         self.socket
     }

@@ -37,6 +37,10 @@ impl<S: Socket> Socket for NativeTlsSocket<S> {
             ready => Poll::Ready(ready),
         }
     }
+
+    fn peer_certificate(&self) -> Option<Vec<u8>> {
+        self.stream.peer_certificate().ok()??.to_der().ok()
+    }
 }
 
 pub async fn handshake<S: Socket>(

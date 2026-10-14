@@ -37,6 +37,8 @@ if a parameter is not passed in via URL, it is populated by reading
 | `sslrootcert`      | `PGSSLROOTCERT`      | Unset. See [Note: SSL](#note-ssl).                          |
 | `sslcert`          | `PGSSLCERT`          | Unset. See [Note: SSL](#note-ssl).                          |
 | `sslkey`           | `PGSSLKEY`           | Unset. See [Note: SSL](#note-ssl).                          |
+| `channel_binding`  | `PGCHANNELBINDING`   | `prefer`. See [`PgChannelBinding`] for details.             |
+| `require_auth`     | `PGREQUIREAUTH`      | Unset (any method). See [`PgAuthMethod`] for details.       |
 | `options`          | `PGOPTIONS`          | Unset.                                                      |
 | `application_name` | `PGAPPNAME`          | Unset.                                                      |
 

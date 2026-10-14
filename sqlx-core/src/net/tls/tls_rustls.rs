@@ -85,6 +85,10 @@ impl<S: Socket> Socket for RustlsSocket<S> {
 
         Poll::Ready(Ok(()))
     }
+
+    fn peer_certificate(&self) -> Option<Vec<u8>> {
+        Some(self.state.peer_certificates()?.first()?.to_vec())
+    }
 }
 
 pub async fn handshake<S>(socket: S, tls_config: TlsConfig<'_>) -> Result<RustlsSocket<S>, Error>

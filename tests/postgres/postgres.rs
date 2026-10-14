@@ -2,8 +2,9 @@ use futures_util::{Stream, StreamExt, TryStreamExt};
 
 use sqlx::postgres::types::Oid;
 use sqlx::postgres::{
-    PgAdvisoryLock, PgConnectOptions, PgConnection, PgDatabaseError, PgErrorPosition, PgListener,
-    PgPoolOptions, PgRow, PgSeverity, Postgres, PG_COPY_MAX_DATA_LEN,
+    PgAdvisoryLock, PgAuthMethod, PgChannelBinding, PgConnectOptions, PgConnection,
+    PgDatabaseError, PgErrorPosition, PgListener, PgPoolOptions, PgRow, PgSeverity, PgSslMode,
+    Postgres, PG_COPY_MAX_DATA_LEN,
 };
 use sqlx::{Column, Connection, Executor, Row, SqlSafeStr, Statement, TypeInfo};
 use sqlx_core::sql_str::AssertSqlSafe;
@@ -861,6 +862,39 @@ async fn it_sets_application_name() -> anyhow::Result<()> {
     let val: String = row.get("app_name");
 
     assert_eq!("some-name", &val);
+
+    Ok(())
+}
+
+// Exercised when the suite runs with `channel_binding=require` in `DATABASE_URL`, against a server
+// that offers `SCRAM-SHA-256-PLUS` with an RSA or ECDSA certificate.
+#[sqlx_macros::test]
+async fn it_binds_scram_to_the_tls_connection() -> anyhow::Result<()> {
+    sqlx_test::setup_if_needed();
+
+    let options: PgConnectOptions = env::var("DATABASE_URL")?.parse()?;
+    if options.get_channel_binding() != PgChannelBinding::Require {
+        return Ok(());
+    }
+
+    let mut conn = PgConnection::connect_with(&options).await?;
+    let ssl: bool = sqlx::query_scalar("select ssl from pg_stat_ssl where pid = pg_backend_pid()")
+        .fetch_one(&mut conn)
+        .await?;
+    assert!(ssl);
+    conn.close().await?;
+
+    let plaintext = options.clone().ssl_mode(PgSslMode::Disable);
+    let err = PgConnection::connect_with(&plaintext).await.unwrap_err();
+    assert!(err.to_string().contains("channel binding"), "{err}");
+
+    let cleartext_only = options
+        .channel_binding(PgChannelBinding::Prefer)
+        .require_auth([PgAuthMethod::Password]);
+    let err = PgConnection::connect_with(&cleartext_only)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("require_auth"), "{err}");
 
     Ok(())
 }

@@ -3,11 +3,13 @@ use std::env::var;
 use std::fmt::{self, Display, Write};
 use std::path::{Path, PathBuf};
 
+pub use auth::{PgAuthMethod, PgChannelBinding};
 pub use ssl_mode::PgSslMode;
 pub use ssl_negotiation::PgSslNegotiation;
 
 use crate::{connection::LogSettings, net::tls::CertificateInput};
 
+mod auth;
 mod connect;
 mod parse;
 mod pgpass;
@@ -28,6 +30,8 @@ pub struct PgConnectOptions {
     pub(crate) ssl_root_cert: Option<CertificateInput>,
     pub(crate) ssl_client_cert: Option<CertificateInput>,
     pub(crate) ssl_client_key: Option<CertificateInput>,
+    pub(crate) channel_binding: PgChannelBinding,
+    pub(crate) require_auth: Option<Vec<PgAuthMethod>>,
     pub(crate) statement_cache_capacity: usize,
     pub(crate) application_name: Option<String>,
     pub(crate) log_settings: LogSettings,
@@ -99,6 +103,13 @@ impl PgConnectOptions {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or_default(),
+            channel_binding: var("PGCHANNELBINDING")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_default(),
+            require_auth: var("PGREQUIREAUTH")
+                .ok()
+                .and_then(|v| PgAuthMethod::parse_list(&v).ok()),
             statement_cache_capacity: 100,
             application_name: var("PGAPPNAME").ok(),
             extra_float_digits: Some("2".into()),
@@ -245,6 +256,43 @@ impl PgConnectOptions {
     /// ```
     pub fn ssl_negotiation(mut self, procedure: PgSslNegotiation) -> Self {
         self.ssl_negotiation = procedure;
+        self
+    }
+
+    /// Sets whether SCRAM authentication is bound to the TLS connection with
+    /// `SCRAM-SHA-256-PLUS` and `tls-server-end-point`.
+    ///
+    /// By default, the mode is [`Prefer`](PgChannelBinding::Prefer). With
+    /// [`Require`](PgChannelBinding::Require), a server that does not prove it knows the
+    /// password's SCRAM verifier over this very TLS connection fails the connection, so a party
+    /// that terminates TLS in between cannot relay the authentication.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use sqlx_postgres::{PgChannelBinding, PgConnectOptions};
+    /// let options = PgConnectOptions::new()
+    ///     .channel_binding(PgChannelBinding::Require);
+    /// ```
+    pub fn channel_binding(mut self, mode: PgChannelBinding) -> Self {
+        self.channel_binding = mode;
+        self
+    }
+
+    /// Sets the authentication methods the server may ask for. The connection fails, before any
+    /// password is sent, when the server asks for another one.
+    ///
+    /// By default, every method is allowed.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use sqlx_postgres::{PgAuthMethod, PgConnectOptions};
+    /// let options = PgConnectOptions::new()
+    ///     .require_auth([PgAuthMethod::ScramSha256]);
+    /// ```
+    pub fn require_auth(mut self, methods: impl IntoIterator<Item = PgAuthMethod>) -> Self {
+        self.require_auth = Some(methods.into_iter().collect());
         self
     }
 
@@ -587,6 +635,32 @@ impl PgConnectOptions {
     /// ```
     pub fn get_ssl_negotiation(&self) -> PgSslNegotiation {
         self.ssl_negotiation
+    }
+
+    /// Get the channel binding mode.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use sqlx_postgres::{PgChannelBinding, PgConnectOptions};
+    /// let options = PgConnectOptions::new();
+    /// assert_eq!(options.get_channel_binding(), PgChannelBinding::Prefer);
+    /// ```
+    pub fn get_channel_binding(&self) -> PgChannelBinding {
+        self.channel_binding
+    }
+
+    /// Get the authentication methods the server may ask for, `None` if every method is allowed.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use sqlx_postgres::PgConnectOptions;
+    /// let options = PgConnectOptions::new();
+    /// assert!(options.get_require_auth().is_none());
+    /// ```
+    pub fn get_require_auth(&self) -> Option<&[PgAuthMethod]> {
+        self.require_auth.as_deref()
     }
 
     /// Get the application name.
