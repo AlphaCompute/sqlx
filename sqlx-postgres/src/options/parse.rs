@@ -1,5 +1,5 @@
 use crate::error::Error;
-use crate::{PgConnectOptions, PgSslMode, PgSslNegotiation};
+use crate::{PgAuthMethod, PgChannelBinding, PgConnectOptions, PgSslMode, PgSslNegotiation};
 use sqlx_core::percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use sqlx_core::Url;
 use std::net::IpAddr;
@@ -55,6 +55,14 @@ impl PgConnectOptions {
 
                 "sslnegotiation" | "ssl-negotiation" => {
                     options = options.ssl_negotiation(value.parse().map_err(Error::config)?);
+                }
+
+                "channel_binding" => {
+                    options = options.channel_binding(value.parse().map_err(Error::config)?);
+                }
+
+                "require_auth" => {
+                    options = options.require_auth(PgAuthMethod::parse_list(&value)?);
                 }
 
                 "sslrootcert" | "ssl-root-cert" | "ssl-ca" => {
@@ -156,6 +164,20 @@ impl PgConnectOptions {
         };
         url.query_pairs_mut()
             .append_pair("sslnegotiation", ssl_negotiation);
+
+        let channel_binding = match self.channel_binding {
+            PgChannelBinding::Disable => "disable",
+            PgChannelBinding::Prefer => "prefer",
+            PgChannelBinding::Require => "require",
+        };
+        url.query_pairs_mut()
+            .append_pair("channel_binding", channel_binding);
+
+        if let Some(methods) = &self.require_auth {
+            let methods: Vec<_> = methods.iter().map(|m| m.name()).collect();
+            url.query_pairs_mut()
+                .append_pair("require_auth", &methods.join(","));
+        }
 
         if let Some(ssl_root_cert) = &self.ssl_root_cert {
             url.query_pairs_mut()
@@ -294,6 +316,22 @@ fn it_parses_sslnegotiation_correctly_from_parameter() {
 }
 
 #[test]
+fn it_parses_channel_binding_and_require_auth_and_builds_them_back() {
+    let url = "postgres://localhost/?channel_binding=require&require_auth=scram-sha-256";
+    let opts = PgConnectOptions::from_str(url).unwrap();
+
+    assert_eq!(opts.channel_binding, PgChannelBinding::Require);
+    assert_eq!(
+        opts.require_auth.as_deref(),
+        Some(&[PgAuthMethod::ScramSha256][..])
+    );
+
+    let rebuilt = PgConnectOptions::from_str(opts.build_url().as_str()).unwrap();
+    assert_eq!(rebuilt.channel_binding, PgChannelBinding::Require);
+    assert_eq!(rebuilt.require_auth, opts.require_auth);
+}
+
+#[test]
 fn it_parses_socket_correctly_percent_encoded() {
     let url = "postgres://%2Fvar%2Flib%2Fpostgres/database";
     let opts = PgConnectOptions::from_str(url).unwrap();
@@ -337,7 +375,7 @@ fn it_returns_the_parsed_url_when_socket() {
 
     let mut expected_url = Url::parse(url).unwrap();
     // PgConnectOptions defaults
-    let query_string = "sslmode=prefer&sslnegotiation=postgres&statement-cache-capacity=100";
+    let query_string = "sslmode=prefer&sslnegotiation=postgres&channel_binding=prefer&statement-cache-capacity=100";
     let port = 5432;
     expected_url.set_query(Some(query_string));
     let _ = expected_url.set_port(Some(port));
@@ -352,7 +390,7 @@ fn it_returns_the_parsed_url_when_host() {
 
     let mut expected_url = Url::parse(url).unwrap();
     // PgConnectOptions defaults
-    let query_string = "sslmode=prefer&sslnegotiation=postgres&statement-cache-capacity=100";
+    let query_string = "sslmode=prefer&sslnegotiation=postgres&channel_binding=prefer&statement-cache-capacity=100";
     expected_url.set_query(Some(query_string));
 
     assert_eq!(expected_url, opts.build_url());

@@ -28,6 +28,11 @@ pub trait Socket: Send + Sync + Unpin + 'static {
 
     fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>>;
 
+    /// The DER encoding of the certificate the peer presented, if this is a TLS socket.
+    fn peer_certificate(&self) -> Option<Vec<u8>> {
+        None
+    }
+
     fn read<'a, B: ReadBuf>(&'a mut self, buf: &'a mut B) -> Read<'a, Self, B>
     where
         Self: Sized,
@@ -178,6 +183,10 @@ impl<S: Socket + ?Sized> Socket for Box<S> {
 
     fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         (**self).poll_shutdown(cx)
+    }
+
+    fn peer_certificate(&self) -> Option<Vec<u8>> {
+        (**self).peer_certificate()
     }
 }
 

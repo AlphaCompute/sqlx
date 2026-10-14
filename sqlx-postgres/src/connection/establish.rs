@@ -7,7 +7,7 @@ use crate::io::StatementId;
 use crate::message::{
     Authentication, BackendKeyData, BackendMessageFormat, Password, ReadyForQuery, Startup,
 };
-use crate::{PgConnectOptions, PgConnection};
+use crate::{PgAuthMethod, PgChannelBinding, PgConnectOptions, PgConnection};
 
 use super::PgConnectionInner;
 
@@ -61,6 +61,7 @@ impl PgConnection {
         let mut process_id = 0;
         let mut secret_key = 0;
         let transaction_status;
+        let mut authenticated = false;
 
         loop {
             let message = stream.recv().await?;
@@ -68,12 +69,16 @@ impl PgConnection {
                 BackendMessageFormat::Authentication => match message.decode()? {
                     Authentication::Ok => {
                         // the authentication exchange is successfully completed
-                        // do nothing; no more information is required to continue
+                        if !authenticated {
+                            allow_auth(options, PgAuthMethod::None)?;
+                        }
                     }
 
                     Authentication::CleartextPassword => {
                         // The frontend must now send a [PasswordMessage] containing the
                         // password in clear-text form.
+                        allow_auth(options, PgAuthMethod::Password)?;
+                        authenticated = true;
 
                         stream
                             .send(Password::Cleartext(
@@ -87,6 +92,8 @@ impl PgConnection {
                         // password (with user name) encrypted via MD5, then encrypted again
                         // using the 4-byte random salt specified in the
                         // [AuthenticationMD5Password] message.
+                        allow_auth(options, PgAuthMethod::Md5)?;
+                        authenticated = true;
 
                         stream
                             .send(Password::Md5 {
@@ -98,7 +105,9 @@ impl PgConnection {
                     }
 
                     Authentication::Sasl(body) => {
+                        allow_auth(options, PgAuthMethod::ScramSha256)?;
                         sasl::authenticate(&mut stream, options, body).await?;
+                        authenticated = true;
                     }
 
                     method => {
@@ -153,4 +162,49 @@ impl PgConnection {
             }),
         })
     }
+}
+
+/// Fails before anything is sent when `require_auth` or `channel_binding=require` rules out the
+/// method the server asked for. `channel_binding=require` allows only SCRAM, which itself
+/// refuses to proceed without `SCRAM-SHA-256-PLUS`.
+fn allow_auth(options: &PgConnectOptions, method: PgAuthMethod) -> Result<(), Error> {
+    let asked = || match method {
+        PgAuthMethod::None => "the server did not ask for authentication".to_owned(),
+        _ => format!("the server asked for {} authentication", method.name()),
+    };
+    if options.channel_binding == PgChannelBinding::Require && method != PgAuthMethod::ScramSha256 {
+        return Err(err_protocol!(
+            "channel binding is required, but {}",
+            asked()
+        ));
+    }
+    if let Some(allowed) = &options.require_auth {
+        if !allowed.contains(&method) {
+            return Err(err_protocol!(
+                "{}, which `require_auth` does not allow",
+                asked()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn it_refuses_methods_outside_require_auth_and_channel_binding() {
+    let scram_only =
+        PgConnectOptions::new_without_pgpass().require_auth([PgAuthMethod::ScramSha256]);
+    let bound = PgConnectOptions::new_without_pgpass().channel_binding(PgChannelBinding::Require);
+    for options in [&scram_only, &bound] {
+        assert!(allow_auth(options, PgAuthMethod::ScramSha256).is_ok());
+        for method in [
+            PgAuthMethod::Password,
+            PgAuthMethod::Md5,
+            PgAuthMethod::None,
+        ] {
+            assert!(allow_auth(options, method).is_err(), "{method:?}");
+        }
+    }
+
+    let default = PgConnectOptions::new_without_pgpass();
+    assert!(allow_auth(&default, PgAuthMethod::Password).is_ok());
 }
